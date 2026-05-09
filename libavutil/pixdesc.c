@@ -2791,6 +2791,30 @@ static const AVPixFmtDescriptor av_pix_fmt_descriptors[AV_PIX_FMT_NB] = {
         },
         .flags = AV_PIX_FMT_FLAG_PLANAR,
     },
+    [AV_PIX_FMT_NV15] = {
+        .name = "nv15",
+        .nb_components = 3,
+        .log2_chroma_w = 1,
+        .log2_chroma_h = 1,
+        .comp = {
+            { 0, 10,  0, 0, 10 },      /* Y */
+            { 1, 20,  0, 0, 10 },      /* U */
+            { 1, 20, 10, 0, 10 },      /* V */
+        },
+        .flags = AV_PIX_FMT_FLAG_PLANAR | AV_PIX_FMT_FLAG_BITSTREAM,
+    },
+    [AV_PIX_FMT_NV20] = {
+        .name = "nv20",
+        .nb_components = 3,
+        .log2_chroma_w = 1,
+        .log2_chroma_h = 0,
+        .comp = {
+            { 0, 10,  0, 0, 10 },      /* Y */
+            { 1, 20,  0, 0, 10 },      /* U */
+            { 1, 20, 10, 0, 10 },      /* V */
+        },
+        .flags = AV_PIX_FMT_FLAG_PLANAR | AV_PIX_FMT_FLAG_BITSTREAM,
+    },
 };
 
 static const char * const color_range_names[] = {
@@ -2854,6 +2878,9 @@ static const char * const color_space_names[] = {
     [AVCOL_SPC_CHROMA_DERIVED_NCL] = "chroma-derived-nc",
     [AVCOL_SPC_CHROMA_DERIVED_CL] = "chroma-derived-c",
     [AVCOL_SPC_ICTCP] = "ictcp",
+    [AVCOL_SPC_IPT_C2] = "ipt-c2",
+    [AVCOL_SPC_YCGCO_RE] = "ycgco-re",
+    [AVCOL_SPC_YCGCO_RO] = "ycgco-ro",
 };
 
 static const char * const chroma_location_names[] = {

@@ -58,6 +58,7 @@ const rkmpp_sources: []const []const u8 = &.{
     "mpp/codec/mpp_dec_normal.c",
     "mpp/codec/mpp_dec.c",
     "mpp/codec/mpp_parser.c",
+    "mpp/codec/dec/common/h2645d_sei.c",
     "mpp/codec/dec/h264/h264d_api.c",
     "mpp/codec/dec/h264/h264d_parse.c",
     "mpp/codec/dec/h264/h264d_slice.c",
@@ -162,6 +163,27 @@ const rkmpp_sources: []const []const u8 = &.{
     "utils/osd3_test.c",
     "utils/utils.c",
     "utils/utils_singleton.c",
+    "mpp/base/mpp_enc_cfg.c",
+    "mpp/base/mpp_enc_ref.c",
+    "mpp/base/mpp_enc_refs.c",
+    "mpp/codec/enc_impl.c",
+    "mpp/codec/mpp_enc_impl.c",
+    "mpp/codec/mpp_enc_v2.c",
+    "mpp/codec/enc/dummy/dummy_enc_api.c",
+    "mpp/hal/mpp_enc_hal.c",
+    "utils/mpi_enc_utils.c",
+    "utils/mpp_enc_args.c",
+    "utils/mpp_enc_roi_utils.c",
+    "mpp/codec/rc/h264e_rc.c",
+    "mpp/codec/rc/h265e_rc.c",
+    "mpp/codec/rc/jpege_rc.c",
+    "mpp/codec/rc/vp8e_rc.c",
+    "mpp/codec/rc/rc_model_v2_smt.c",
+    "mpp/codec/rc/rc_model_v2.c",
+    "mpp/codec/rc/rc_api.c",
+    "mpp/codec/rc/rc.c",
+    "mpp/codec/rc/rc_base.c",
+    "mpp/codec/mpp_rc.c",
 };
 
 pub fn build(b: *std.Build) void {
@@ -231,14 +253,19 @@ pub fn build(b: *std.Build) void {
 
     // rkmpp
     const mpp_upstream = b.dependency("rkmpp", .{});
-    const rkmpp = b.addLibrary(.{ .name = "rkmpp", .linkage = .static, .root_module = b.createModule(.{
-        .target = target,
-        .optimize = optimize,
-        .link_libc = true,
-        .omit_frame_pointer = omit_frame_pointer,
-        .pic = pic,
-        .strip = true,
-    }) });
+    const rkmpp = b.addLibrary(.{
+        .name = "rockchip_mpp",
+        .linkage = .dynamic,
+        .root_module = b.createModule(.{
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+            .omit_frame_pointer = omit_frame_pointer,
+            .pic = pic,
+            .strip = true,
+        }),
+        .version = .{ .major = 1, .minor = 0, .patch = 0 },
+    });
     rkmpp.root_module.addIncludePath(b.path("compat/rkmpp"));
     rkmpp.root_module.addIncludePath(mpp_upstream.path("inc"));
     rkmpp.root_module.addIncludePath(mpp_upstream.path("utils"));
@@ -254,6 +281,7 @@ pub fn build(b: *std.Build) void {
     rkmpp.root_module.addIncludePath(mpp_upstream.path("mpp/codec/dec/common"));
     rkmpp.root_module.addIncludePath(mpp_upstream.path("mpp/codec/dec/h264"));
     rkmpp.root_module.addIncludePath(mpp_upstream.path("mpp/codec/dec/h265"));
+    rkmpp.root_module.addIncludePath(mpp_upstream.path("mpp/codec/rc"));
     rkmpp.root_module.addIncludePath(mpp_upstream.path("mpp/hal/inc"));
     rkmpp.root_module.addIncludePath(mpp_upstream.path("mpp/hal/common"));
     rkmpp.root_module.addIncludePath(mpp_upstream.path("mpp/hal/common/h264"));
@@ -271,8 +299,13 @@ pub fn build(b: *std.Build) void {
     rkmpp.root_module.addCSourceFiles(.{
         .root = mpp_upstream.path("."),
         .files = rkmpp_sources,
-        .flags = &.{"-D_GNU_SOURCE"},
+        .flags = &.{
+            "-D_GNU_SOURCE",
+            "-DHAVE_H264D",
+            "-DHAVE_H265D",
+        },
     });
+    b.installArtifact(rkmpp);
     mod.addIncludePath(mpp_upstream.path("inc"));
     mod.linkLibrary(rkmpp);
 
@@ -1510,7 +1543,7 @@ pub fn build(b: *std.Build) void {
         .CONFIG_MP2_DECODER = false,
         .CONFIG_MP2FLOAT_DECODER = false,
         .CONFIG_MP3FLOAT_DECODER = false,
-        .CONFIG_MP3_DECODER = false,
+        .CONFIG_MP3_DECODER = true,
         .CONFIG_MP3ADUFLOAT_DECODER = false,
         .CONFIG_MP3ADU_DECODER = false,
         .CONFIG_MP3ON4FLOAT_DECODER = false,
@@ -1542,7 +1575,7 @@ pub fn build(b: *std.Build) void {
         .CONFIG_TTA_DECODER = false,
         .CONFIG_TWINVQ_DECODER = false,
         .CONFIG_VMDAUDIO_DECODER = false,
-        .CONFIG_VORBIS_DECODER = false,
+        .CONFIG_VORBIS_DECODER = true,
         .CONFIG_WAVARC_DECODER = false,
         .CONFIG_WAVPACK_DECODER = false,
         .CONFIG_WMALOSSLESS_DECODER = false,
@@ -2115,7 +2148,7 @@ pub fn build(b: *std.Build) void {
         .CONFIG_SIPR_PARSER = false,
         .CONFIG_TAK_PARSER = false,
         .CONFIG_VC1_PARSER = false,
-        .CONFIG_VORBIS_PARSER = false,
+        .CONFIG_VORBIS_PARSER = true,
         .CONFIG_VP3_PARSER = false,
         .CONFIG_VP8_PARSER = false,
         .CONFIG_VP9_PARSER = false,
@@ -3517,8 +3550,6 @@ fn categorizeSources(ally: std.mem.Allocator, target: std.Target) CategorizedSou
         // Skip files from wrong targets.
         if (std.mem.startsWith(u8, sub_path, "aarch64/")) {
             if (!target.cpu.arch.isAARCH64()) continue;
-        } else if (std.mem.startsWith(u8, sub_path, "alpha/")) {
-            continue;
         } else if (std.mem.startsWith(u8, sub_path, "arm/")) {
             if (!target.cpu.arch.isArm()) continue;
         } else if (std.mem.startsWith(u8, sub_path, "alpha/")) {

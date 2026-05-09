@@ -104,6 +104,10 @@ void ff_free_stream_group(AVStreamGroup **pstg)
         av_freep(&stg->params.tile_grid->offsets);
         av_freep(&stg->params.tile_grid);
         break;
+    case AV_STREAM_GROUP_PARAMS_LCEVC:
+        av_opt_free(stg->params.lcevc);
+        av_freep(&stg->params.lcevc);
+        break;
     default:
         break;
     }
@@ -180,6 +184,7 @@ void avformat_free_context(AVFormatContext *s)
     av_dict_free(&si->id3v2_meta);
     av_packet_free(&si->pkt);
     av_packet_free(&si->parse_pkt);
+    avpriv_packet_list_free(&si->packet_buffer);
     av_freep(&s->streams);
     av_freep(&s->stream_groups);
     ff_flush_packet_queue(s);
@@ -327,6 +332,7 @@ const char *avformat_stream_group_name(enum AVStreamGroupParamsType type)
     case AV_STREAM_GROUP_PARAMS_IAMF_AUDIO_ELEMENT:        return "IAMF Audio Element";
     case AV_STREAM_GROUP_PARAMS_IAMF_MIX_PRESENTATION:     return "IAMF Mix Presentation";
     case AV_STREAM_GROUP_PARAMS_TILE_GRID:                 return "Tile Grid";
+    case AV_STREAM_GROUP_PARAMS_LCEVC:                     return "LCEVC (Split video and enhancement)";
     }
     return NULL;
 }
@@ -770,6 +776,7 @@ AVRational av_guess_frame_rate(AVFormatContext *format, AVStream *st, AVFrame *f
     return fr;
 }
 
+#if FF_API_INTERNAL_TIMING
 int avformat_transfer_internal_stream_timing_info(const AVOutputFormat *ofmt,
                                                   AVStream *ost, const AVStream *ist,
                                                   enum AVTimebaseSource copy_tb)
@@ -849,6 +856,7 @@ AVRational av_stream_get_codec_timebase(const AVStream *st)
 {
     return cffstream(st)->avctx ? cffstream(st)->avctx->time_base : cffstream(st)->transferred_mux_tb;
 }
+#endif
 
 void avpriv_set_pts_info(AVStream *st, int pts_wrap_bits,
                          unsigned int pts_num, unsigned int pts_den)

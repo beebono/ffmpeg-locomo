@@ -154,6 +154,9 @@ static int iamf_read_header(AVFormatContext *s)
         }
     }
 
+    if (!s->nb_streams)
+        return AVERROR_INVALIDDATA;
+
     return 0;
 }
 
@@ -162,7 +165,7 @@ static int iamf_read_packet(AVFormatContext *s, AVPacket *pkt)
     IAMFDemuxContext *const c = s->priv_data;
     int ret;
 
-    ret = ff_iamf_read_packet(s, c, s->pb, INT_MAX, pkt);
+    ret = ff_iamf_read_packet(s, c, s->pb, INT_MAX, 0, pkt);
     if (ret < 0)
         return ret;
 

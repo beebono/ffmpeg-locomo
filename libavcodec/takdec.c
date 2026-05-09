@@ -26,6 +26,7 @@
  */
 
 #include "libavutil/internal.h"
+#include "libavutil/mem.h"
 #include "libavutil/mem_internal.h"
 #include "libavutil/samplefmt.h"
 
@@ -432,6 +433,9 @@ static int decode_subframe(TAKDecContext *s, int32_t *decoded,
         if (filter_quant < 3)
             return AVERROR_INVALIDDATA;
     }
+
+    if (get_bits_left(gb) < 2*10 + 2*size)
+        return AVERROR_INVALIDDATA;
 
     s->predictors[0] = get_sbits(gb, 10);
     s->predictors[1] = get_sbits(gb, 10);

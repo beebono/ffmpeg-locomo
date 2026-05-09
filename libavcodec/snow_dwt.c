@@ -22,6 +22,7 @@
 #include "libavutil/attributes.h"
 #include "libavutil/avassert.h"
 #include "libavutil/common.h"
+#include "libavutil/mem.h"
 #include "me_cmp.h"
 #include "snow_dwt.h"
 
@@ -857,5 +858,3 @@ av_cold void ff_dwt_init(SnowDWTContext *c)
     ff_dwt_init_x86(c);
 #endif
 }
-
-

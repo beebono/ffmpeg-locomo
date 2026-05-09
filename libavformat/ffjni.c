@@ -20,4 +20,22 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
+<<<<<<<< HEAD:libavformat/ffjni.c
 #include "libavcodec/ffjni.c"
+========
+#include "config.h"
+
+#include "libavutil/cpu.h"
+#include "libavcodec/aarch64/fdct.h"
+#include "libavcodec/aarch64/idct.h"
+
+static const struct algo fdct_tab_arch[] = {
+    { "neon", ff_fdct_neon, FF_IDCT_PERM_NONE, AV_CPU_FLAG_NEON },
+    { 0 }
+};
+
+static const struct algo idct_tab_arch[] = {
+    { "SIMPLE-NEON", ff_simple_idct_neon, FF_IDCT_PERM_PARTTRANS, AV_CPU_FLAG_NEON },
+    { 0 }
+};
+>>>>>>>> nyan/7.1:libavcodec/tests/aarch64/dct.c

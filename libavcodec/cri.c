@@ -220,10 +220,12 @@ static int cri_decode_frame(AVCodecContext *avctx, AVFrame *p,
             if (bytestream2_get_le32(gb) != 0)
                 return AVERROR_INVALIDDATA;
             break;
-        case 102:
-            bytestream2_get_buffer(gb, codec_name, FFMIN(length, sizeof(codec_name) - 1));
-            length -= FFMIN(length, sizeof(codec_name) - 1);
-            if (strncmp(codec_name, "cintel_craw", FFMIN(length, sizeof(codec_name) - 1)))
+        case 102:;
+            int read_len = FFMIN(length, sizeof(codec_name) - 1);
+            if (read_len != bytestream2_get_buffer(gb, codec_name, read_len))
+                return AVERROR_INVALIDDATA;
+            length -= read_len;
+            if (strncmp(codec_name, "cintel_craw", read_len))
                 return AVERROR_INVALIDDATA;
             compressed = 1;
             goto skip;
@@ -234,10 +236,14 @@ static int cri_decode_frame(AVCodecContext *avctx, AVFrame *p,
             s->data_size = length;
             goto skip;
         case 105:
+            if (length <= 0)
+                return AVERROR_INVALIDDATA;
             hflip = bytestream2_get_byte(gb) != 0;
             length--;
             goto skip;
         case 106:
+            if (length <= 0)
+                return AVERROR_INVALIDDATA;
             vflip = bytestream2_get_byte(gb) != 0;
             length--;
             goto skip;
@@ -405,9 +411,6 @@ skip:
             av_display_matrix_flip((int32_t *)rotation->data, hflip, vflip);
         }
     }
-
-    p->pict_type = AV_PICTURE_TYPE_I;
-    p->flags |= AV_FRAME_FLAG_KEY;
 
     *got_frame = 1;
 

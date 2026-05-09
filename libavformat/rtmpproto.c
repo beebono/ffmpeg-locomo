@@ -32,6 +32,7 @@
 #include "libavutil/intfloat.h"
 #include "libavutil/lfg.h"
 #include "libavutil/md5.h"
+#include "libavutil/mem.h"
 #include "libavutil/opt.h"
 #include "libavutil/random_seed.h"
 #include "avformat.h"
@@ -161,6 +162,13 @@ static const uint8_t rtmp_server_key[] = {
 static int handle_chunk_size(URLContext *s, RTMPPacket *pkt);
 static int handle_window_ack_size(URLContext *s, RTMPPacket *pkt);
 static int handle_set_peer_bw(URLContext *s, RTMPPacket *pkt);
+
+static size_t zstrlen(const char *c)
+{
+    if(c)
+        return strlen(c);
+    return 0;
+}
 
 static int add_tracked_method(RTMPContext *rt, const char *name, int id)
 {
@@ -326,7 +334,16 @@ static int gen_connect(URLContext *s, RTMPContext *rt)
     int ret;
 
     if ((ret = ff_rtmp_packet_create(&pkt, RTMP_SYSTEM_CHANNEL, RTMP_PT_INVOKE,
-                                     0, 4096 + APP_MAX_LENGTH)) < 0)
+                                     0, 4096 + APP_MAX_LENGTH
+                                     + strlen(rt->auth_params) + strlen(rt->flashver)
+                                     + zstrlen(rt->enhanced_codecs)/5*7
+                                     + zstrlen(rt->swfurl)
+                                     + zstrlen(rt->swfverify)
+                                     + zstrlen(rt->tcurl)
+                                     + zstrlen(rt->auth_params)
+                                     + zstrlen(rt->pageurl)
+                                     + zstrlen(rt->conn)*3
+                                     )) < 0)
         return ret;
 
     p = pkt.data;
@@ -1899,7 +1916,9 @@ static int write_status(URLContext *s, RTMPPacket *pkt,
 
     if ((ret = ff_rtmp_packet_create(&spkt, RTMP_SYSTEM_CHANNEL,
                                      RTMP_PT_INVOKE, 0,
-                                     RTMP_PKTDATA_DEFAULT_SIZE)) < 0) {
+                                     RTMP_PKTDATA_DEFAULT_SIZE
+                                     + strlen(status) + strlen(description)
+                                     + zstrlen(details))) < 0) {
         av_log(s, AV_LOG_ERROR, "Unable to create response packet\n");
         return ret;
     }
@@ -2667,7 +2686,7 @@ static int rtmp_open(URLContext *s, const char *uri, int flags, AVDictionary **o
     }
     if (!strcmp(proto, "rtmpt") || !strcmp(proto, "rtmpts")) {
         if (!strcmp(proto, "rtmpts"))
-            av_dict_set(opts, "ffrtmphttp_tls", "1", 1);
+            av_dict_set(opts, "ffrtmphttp_tls", "1", AV_DICT_MATCH_CASE);
 
         /* open the http tunneling connection */
         ff_url_join(buf, sizeof(buf), "ffrtmphttp", NULL, hostname, port, NULL);
@@ -2832,6 +2851,12 @@ reconnect:
                     "FMLE/3.0 (compatible; %s)", LIBAVFORMAT_IDENT);
         }
     }
+    if (   strlen(rt->flashver) > FLASHVER_MAX_LENGTH
+        || strlen(rt->tcurl   ) >    TCURL_MAX_LENGTH
+    ) {
+        ret = AVERROR(EINVAL);
+        goto fail;
+    }
 
     rt->receive_report_size = 1048576;
     rt->bytes_read = 0;
@@ -2917,10 +2942,6 @@ reconnect:
     return 0;
 
 fail:
-    av_freep(&rt->playpath);
-    av_freep(&rt->tcurl);
-    av_freep(&rt->flashver);
-    av_dict_free(opts);
     rtmp_close(s);
     return ret;
 }

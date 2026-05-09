@@ -29,6 +29,7 @@
 #include "libavutil/internal.h"
 #include "libavutil/intreadwrite.h"
 #include "libavutil/mathematics.h"
+#include "libavutil/mem.h"
 #include "libavutil/opt.h"
 #include "libavutil/pixfmt.h"
 #include "libavutil/time.h"
@@ -1158,13 +1159,26 @@ static int parse_packet(AVFormatContext *s, AVPacket *pkt,
     AVPacket *out_pkt = si->parse_pkt;
     AVStream *st = s->streams[stream_index];
     FFStream *const sti = ffstream(st);
+    const AVPacketSideData *sd = NULL;
     const uint8_t *data = pkt->data;
+    uint8_t *extradata = sti->avctx->extradata;
+    int extradata_size = sti->avctx->extradata_size;
     int size = pkt->size;
     int ret = 0, got_output = flush;
 
     if (!size && !flush && sti->parser->flags & PARSER_FLAG_COMPLETE_FRAMES) {
         // preserve 0-size sync packets
         compute_pkt_fields(s, st, sti->parser, pkt, AV_NOPTS_VALUE, AV_NOPTS_VALUE);
+    }
+
+    if (pkt->side_data_elems)
+        sd = av_packet_side_data_get(pkt->side_data, pkt->side_data_elems,
+                                     AV_PKT_DATA_NEW_EXTRADATA);
+    if (sd) {
+        av_assert1(size && !flush);
+
+        sti->avctx->extradata      = sd->data;
+        sti->avctx->extradata_size = sd->size;
     }
 
     while (size > 0 || (flush && got_output)) {
@@ -1260,6 +1274,11 @@ static int parse_packet(AVFormatContext *s, AVPacket *pkt,
     }
 
 fail:
+    if (sd) {
+        sti->avctx->extradata      = extradata;
+        sti->avctx->extradata_size = extradata_size;
+    }
+
     if (ret < 0)
         av_packet_unref(out_pkt);
     av_packet_unref(pkt);
@@ -1318,6 +1337,8 @@ fail:
     return ret;
 }
 
+static int extract_extradata(FFFormatContext *si, AVStream *st, const AVPacket *pkt);
+
 static int read_frame_internal(AVFormatContext *s, AVPacket *pkt)
 {
     FFFormatContext *const si = ffformatcontext(s);
@@ -1350,6 +1371,11 @@ static int read_frame_internal(AVFormatContext *s, AVPacket *pkt)
 
         st->event_flags |= AVSTREAM_EVENT_FLAG_NEW_PACKETS;
 
+        int new_extradata = !!av_packet_side_data_get(pkt->side_data, pkt->side_data_elems,
+                                                      AV_PKT_DATA_NEW_EXTRADATA);
+        if (new_extradata)
+            sti->need_context_update = 1;
+
         /* update context if required */
         if (sti->need_context_update) {
             if (avcodec_is_open(sti->avctx)) {
@@ -1360,8 +1386,9 @@ static int read_frame_internal(AVFormatContext *s, AVPacket *pkt)
                     return ret;
             }
 
-            /* close parser, because it depends on the codec */
-            if (sti->parser && sti->avctx->codec_id != st->codecpar->codec_id) {
+            /* close parser, because it depends on the codec and extradata */
+            if (sti->parser &&
+                (sti->avctx->codec_id != st->codecpar->codec_id || new_extradata)) {
                 av_parser_close(sti->parser);
                 sti->parser = NULL;
             }
@@ -1370,6 +1397,16 @@ static int read_frame_internal(AVFormatContext *s, AVPacket *pkt)
             if (ret < 0) {
                 av_packet_unref(pkt);
                 return ret;
+            }
+
+            if (!sti->avctx->extradata) {
+                sti->extract_extradata.inited = 0;
+
+                ret = extract_extradata(si, st, pkt);
+                if (ret < 0) {
+                    av_packet_unref(pkt);
+                    return ret;
+                }
             }
 
             sti->codec_desc = avcodec_descriptor_get(sti->avctx->codec_id);
@@ -1803,8 +1840,9 @@ static void estimate_timings_from_bit_rate(AVFormatContext *ic)
                "Estimating duration from bitrate, this may be inaccurate\n");
 }
 
-#define DURATION_MAX_READ_SIZE 250000LL
-#define DURATION_MAX_RETRY 6
+#define DURATION_DEFAULT_MAX_READ_SIZE 250000LL
+#define DURATION_DEFAULT_MAX_RETRY 6
+#define DURATION_MAX_RETRY 1
 
 /* only usable for MPEG-PS streams */
 static void estimate_timings_from_pts(AVFormatContext *ic, int64_t old_offset)
@@ -1812,6 +1850,8 @@ static void estimate_timings_from_pts(AVFormatContext *ic, int64_t old_offset)
     FFFormatContext *const si = ffformatcontext(ic);
     AVPacket *const pkt = si->pkt;
     int num, den, read_size, ret;
+    int64_t duration_max_read_size = ic->duration_probesize ? ic->duration_probesize >> DURATION_MAX_RETRY : DURATION_DEFAULT_MAX_READ_SIZE;
+    int duration_max_retry = ic->duration_probesize ? DURATION_MAX_RETRY : DURATION_DEFAULT_MAX_RETRY;
     int found_duration = 0;
     int is_end;
     int64_t filesize, offset, duration;
@@ -1847,7 +1887,7 @@ static void estimate_timings_from_pts(AVFormatContext *ic, int64_t old_offset)
     filesize = ic->pb ? avio_size(ic->pb) : 0;
     do {
         is_end = found_duration;
-        offset = filesize - (DURATION_MAX_READ_SIZE << retry);
+        offset = filesize - (duration_max_read_size << retry);
         if (offset < 0)
             offset = 0;
 
@@ -1856,7 +1896,7 @@ static void estimate_timings_from_pts(AVFormatContext *ic, int64_t old_offset)
         for (;;) {
             AVStream *st;
             FFStream *sti;
-            if (read_size >= DURATION_MAX_READ_SIZE << (FFMAX(retry - 1, 0)))
+            if (read_size >= duration_max_read_size << (FFMAX(retry - 1, 0)))
                 break;
 
             do {
@@ -1910,7 +1950,7 @@ static void estimate_timings_from_pts(AVFormatContext *ic, int64_t old_offset)
         }
     } while (!is_end &&
              offset &&
-             ++retry <= DURATION_MAX_RETRY);
+             ++retry <= duration_max_retry);
 
     av_opt_set_int(ic, "skip_changes", 0, AV_OPT_SEARCH_CHILDREN);
 
@@ -2423,6 +2463,7 @@ static int extract_extradata_init(AVStream *st)
     if (!ret)
         goto finish;
 
+    av_bsf_free(&sti->extract_extradata.bsf);
     ret = av_bsf_alloc(f, &sti->extract_extradata.bsf);
     if (ret < 0)
         return ret;
@@ -2499,7 +2540,7 @@ static int extract_extradata(FFFormatContext *si, AVStream *st, const AVPacket *
 int avformat_find_stream_info(AVFormatContext *ic, AVDictionary **options)
 {
     FFFormatContext *const si = ffformatcontext(ic);
-    int count = 0, ret = 0;
+    int count = 0, ret = 0, err;
     int64_t read_size;
     AVPacket *pkt1 = si->pkt;
     int64_t old_offset  = avio_tell(ic->pb);
@@ -3010,9 +3051,11 @@ int avformat_find_stream_info(AVFormatContext *ic, AVDictionary **options)
         }
     }
 
-    ret = compute_chapters_end(ic);
-    if (ret < 0)
+    err = compute_chapters_end(ic);
+    if (err < 0) {
+        ret = err;
         goto find_stream_info_err;
+    }
 
     /* update the stream parameters from the internal codec contexts */
     for (unsigned i = 0; i < ic->nb_streams; i++) {
@@ -3083,9 +3126,12 @@ find_stream_info_err:
             av_freep(&sti->info);
         }
 
-        err = codec_close(sti);
-        if (err < 0 && ret >= 0)
-            ret = err;
+        if (avcodec_is_open(sti->avctx)) {
+            err = codec_close(sti);
+            if (err < 0 && ret >= 0)
+                ret = err;
+        }
+
         av_bsf_free(&sti->extract_extradata.bsf);
     }
     if (ic->pb) {

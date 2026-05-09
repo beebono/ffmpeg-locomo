@@ -48,6 +48,7 @@
 #include "libavutil/bprint.h"
 #include "libavutil/common.h"
 #include "libavutil/eval.h"
+#include "libavutil/mem.h"
 #include "libavutil/opt.h"
 #include "libavutil/random_seed.h"
 #include "libavutil/parseutils.h"
@@ -59,8 +60,8 @@
 #include "libavutil/detection_bbox.h"
 #include "avfilter.h"
 #include "drawutils.h"
+#include "filters.h"
 #include "formats.h"
-#include "internal.h"
 #include "textutils.h"
 #include "video.h"
 
@@ -949,7 +950,7 @@ static int func_eval_expr_int_format(void *ctx, AVBPrint *bp, const char *functi
                                         argv[1][0], positions);
 }
 
-static FFExpandTextFunction expand_text_functions[] = {
+static const FFExpandTextFunction expand_text_functions[] = {
     { "e",               1, 1, func_eval_expr },
     { "eif",             2, 3, func_eval_expr_int_format },
     { "expr",            1, 1, func_eval_expr },
@@ -1016,7 +1017,7 @@ static av_cold int init(AVFilterContext *ctx)
             av_log(ctx, AV_LOG_WARNING, "Multiple texts provided, will use text_source only\n");
             av_free(s->text);
         }
-        s->text = av_mallocz(AV_DETECTION_BBOX_LABEL_NAME_MAX_SIZE *
+        s->text = av_mallocz((AV_DETECTION_BBOX_LABEL_NAME_MAX_SIZE + 1) *
                              (AV_NUM_DETECTION_BBOX_CLASSIFY + 1));
         if (!s->text)
             return AVERROR(ENOMEM);
@@ -1216,6 +1217,7 @@ static int command(AVFilterContext *ctx, const char *cmd, const char *arg, char 
 
         ctx->priv = old;
         uninit(ctx);
+        av_opt_free(old);
         av_freep(&old);
 
         ctx->priv = new;
@@ -1392,8 +1394,7 @@ static int measure_text(AVFilterContext *ctx, TextMetrics *metrics)
 {
     DrawTextContext *s = ctx->priv;
     char *text = s->expanded_text.str;
-    char *textdup = NULL, *start = NULL;
-    int num_chars = 0;
+    char *textdup = NULL;
     int width64 = 0, w64 = 0;
     int cur_min_y64 = 0, first_max_y64 = -32000;
     int first_min_x64 = 32000, last_max_x64 = -32000;
@@ -1403,7 +1404,7 @@ static int measure_text(AVFilterContext *ctx, TextMetrics *metrics)
     Glyph *glyph = NULL;
 
     int i, tab_idx = 0, last_tab_idx = 0, line_offset = 0;
-    char* p;
+    uint8_t *start, *p;
     int ret = 0;
 
     // Count the lines and the tab characters
@@ -1456,7 +1457,7 @@ continue_on_failed2:
             TextLine *cur_line = &s->lines[line_count];
             HarfbuzzData *hb = &cur_line->hb_data;
             cur_line->cluster_offset = line_offset;
-            ret = shape_text_hb(s, hb, start, num_chars);
+            ret = shape_text_hb(s, hb, start, p - start);
             if (ret != 0) {
                 goto done;
             }
@@ -1514,14 +1515,12 @@ continue_on_failed2:
             if (w64 > width64) {
                 width64 = w64;
             }
-            num_chars = -1;
             start = p;
             ++line_count;
             line_offset = i + 1;
         }
 
         if (code == 0) break;
-        ++num_chars;
     }
 
     metrics->line_height64 = s->face->size->metrics.height;
@@ -1552,6 +1551,7 @@ static int draw_text(AVFilterContext *ctx, AVFrame *frame)
 {
     DrawTextContext *s = ctx->priv;
     AVFilterLink *inlink = ctx->inputs[0];
+    FilterLink *inl = ff_filter_link(inlink);
     int x = 0, y = 0, ret;
     int shift_x64, shift_y64;
     int x64, y64;
@@ -1595,7 +1595,7 @@ static int draw_text(AVFilterContext *ctx, AVFrame *frame)
 
     if (s->tc_opt_string) {
         char tcbuf[AV_TIMECODE_STR_SIZE];
-        av_timecode_make_string(&s->tc, tcbuf, inlink->frame_count_out);
+        av_timecode_make_string(&s->tc, tcbuf, inl->frame_count_out);
         av_bprint_clear(bp);
         av_bprintf(bp, "%s%s", s->text, tcbuf);
     }
@@ -1827,6 +1827,7 @@ static int draw_text(AVFilterContext *ctx, AVFrame *frame)
 
 static int filter_frame(AVFilterLink *inlink, AVFrame *frame)
 {
+    FilterLink *inl = ff_filter_link(inlink);
     AVFilterContext *ctx = inlink->dst;
     AVFilterLink *outlink = ctx->outputs[0];
     DrawTextContext *s = ctx->priv;
@@ -1847,7 +1848,7 @@ static int filter_frame(AVFilterLink *inlink, AVFrame *frame)
         }
     }
 
-    if (s->reload && !(inlink->frame_count_out % s->reload)) {
+    if (s->reload && !(inl->frame_count_out % s->reload)) {
         if ((ret = ff_load_textfile(ctx, (const char *)s->textfile, &s->text, NULL)) < 0) {
             av_frame_free(&frame);
             return ret;
@@ -1861,7 +1862,7 @@ static int filter_frame(AVFilterLink *inlink, AVFrame *frame)
 #endif
     }
 
-    s->var_values[VAR_N] = inlink->frame_count_out + s->start_number;
+    s->var_values[VAR_N] = inl->frame_count_out + s->start_number;
     s->var_values[VAR_T] = frame->pts == AV_NOPTS_VALUE ?
         NAN : frame->pts * av_q2d(inlink->time_base);
 

@@ -35,6 +35,7 @@
 #include "libavutil/avassert.h"
 #include "libavutil/avstring.h"
 #include "libavutil/imgutils.h"
+#include "libavutil/mem.h"
 #include "libavutil/parseutils.h"
 #include "libavutil/pixdesc.h"
 #include "libavutil/time.h"
@@ -87,14 +88,17 @@ struct video_data {
     int frame_size;
     int interlaced;
     int top_field_first;
+    int multi_planer;
     int ts_mode;
+    int ignore_input_error;
     TimeFilter *timefilter;
     int64_t last_time_m;
 
     int buffers;
     atomic_int buffers_queued;
-    void **buf_start;
-    unsigned int *buf_len;
+    int plane_count;
+    void ***buf_start;
+    unsigned int **buf_len;
     char *standard;
     v4l2_std_id std_id;
     int channel;
@@ -107,10 +111,10 @@ struct video_data {
     int (*open_f)(const char *file, int oflag, ...);
     int (*close_f)(int fd);
     int (*dup_f)(int fd);
-#ifdef __GLIBC__
-    int (*ioctl_f)(int fd, unsigned long int request, ...);
-#else
+#if HAVE_POSIX_IOCTL
     int (*ioctl_f)(int fd, int request, ...);
+#else
+    int (*ioctl_f)(int fd, unsigned long int request, ...);
 #endif
     ssize_t (*read_f)(int fd, void *buffer, size_t n);
     void *(*mmap_f)(void *start, size_t length, int prot, int flags, int fd, int64_t offset);
@@ -181,11 +185,12 @@ static int device_open(AVFormatContext *ctx, const char* device_path)
     av_log(ctx, AV_LOG_VERBOSE, "fd:%d capabilities:%x\n",
            fd, cap.capabilities);
 
-    if (!(cap.capabilities & V4L2_CAP_VIDEO_CAPTURE)) {
+    if (!(cap.capabilities & (V4L2_CAP_VIDEO_CAPTURE | V4L2_CAP_VIDEO_CAPTURE_MPLANE))) {
         av_log(ctx, AV_LOG_ERROR, "Not a video capture device.\n");
         err = AVERROR(ENODEV);
         goto fail;
     }
+    s->multi_planer = ((cap.capabilities & (V4L2_CAP_VIDEO_CAPTURE | V4L2_CAP_VIDEO_CAPTURE_MPLANE)) == V4L2_CAP_VIDEO_CAPTURE_MPLANE) ? 1 : 0;
 
     if (!(cap.capabilities & V4L2_CAP_STREAMING)) {
         av_log(ctx, AV_LOG_ERROR,
@@ -205,7 +210,7 @@ static int device_init(AVFormatContext *ctx, int *width, int *height,
                        uint32_t pixelformat)
 {
     struct video_data *s = ctx->priv_data;
-    struct v4l2_format fmt = { .type = V4L2_BUF_TYPE_VIDEO_CAPTURE };
+    struct v4l2_format fmt = { .type = (s->multi_planer) ? V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE : V4L2_BUF_TYPE_VIDEO_CAPTURE };
     int res = 0;
 
     fmt.fmt.pix.width = *width;
@@ -287,7 +292,7 @@ static void list_framesizes(AVFormatContext *ctx, uint32_t pixelformat)
 static void list_formats(AVFormatContext *ctx, int type)
 {
     const struct video_data *s = ctx->priv_data;
-    struct v4l2_fmtdesc vfd = { .type = V4L2_BUF_TYPE_VIDEO_CAPTURE };
+    struct v4l2_fmtdesc vfd = { .type = (s->multi_planer) ? V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE : V4L2_BUF_TYPE_VIDEO_CAPTURE };
 
     while(!v4l2_ioctl(s->fd, VIDIOC_ENUM_FMT, &vfd)) {
         enum AVCodecID codec_id = ff_fmt_v4l2codec(vfd.pixelformat);
@@ -351,7 +356,7 @@ static int mmap_init(AVFormatContext *ctx)
     int i, res;
     struct video_data *s = ctx->priv_data;
     struct v4l2_requestbuffers req = {
-        .type   = V4L2_BUF_TYPE_VIDEO_CAPTURE,
+        .type   = (s->multi_planer) ? V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE : V4L2_BUF_TYPE_VIDEO_CAPTURE,
         .count  = desired_video_buffers,
         .memory = V4L2_MEMORY_MMAP
     };
@@ -367,45 +372,71 @@ static int mmap_init(AVFormatContext *ctx)
         return AVERROR(ENOMEM);
     }
     s->buffers = req.count;
-    s->buf_start = av_malloc_array(s->buffers, sizeof(void *));
+    s->buf_start = av_malloc_array(s->buffers, sizeof(void **));
     if (!s->buf_start) {
         av_log(ctx, AV_LOG_ERROR, "Cannot allocate buffer pointers\n");
         return AVERROR(ENOMEM);
     }
-    s->buf_len = av_malloc_array(s->buffers, sizeof(unsigned int));
+    s->buf_len = av_malloc_array(s->buffers, sizeof(unsigned int*));
     if (!s->buf_len) {
         av_log(ctx, AV_LOG_ERROR, "Cannot allocate buffer sizes\n");
         av_freep(&s->buf_start);
         return AVERROR(ENOMEM);
     }
 
+    s->plane_count = 0;
     for (i = 0; i < req.count; i++) {
+        int total_frame_size = 0;
+        int plane_count = 0;
+        struct v4l2_plane planes[VIDEO_MAX_PLANES];
         struct v4l2_buffer buf = {
-            .type   = V4L2_BUF_TYPE_VIDEO_CAPTURE,
-            .index  = i,
-            .memory = V4L2_MEMORY_MMAP
+            .type     = (s->multi_planer) ? V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE : V4L2_BUF_TYPE_VIDEO_CAPTURE,
+            .index    = i,
+            .memory   = V4L2_MEMORY_MMAP,
+            .m.planes = (s->multi_planer) ? planes : 0,
+            .length   = (s->multi_planer) ? VIDEO_MAX_PLANES : 0
         };
         if (v4l2_ioctl(s->fd, VIDIOC_QUERYBUF, &buf) < 0) {
             res = AVERROR(errno);
             av_log(ctx, AV_LOG_ERROR, "ioctl(VIDIOC_QUERYBUF): %s\n", av_err2str(res));
             return res;
         }
-
-        s->buf_len[i] = buf.length;
-        if (s->frame_size > 0 && s->buf_len[i] < s->frame_size) {
-            av_log(ctx, AV_LOG_ERROR,
-                   "buf_len[%d] = %d < expected frame size %d\n",
-                   i, s->buf_len[i], s->frame_size);
+        plane_count = (s->multi_planer) ? buf.length : 1;
+        if (s->plane_count > 0 && s->plane_count != plane_count) {
+            av_log(ctx, AV_LOG_ERROR, "Plane count differed between buffers\n");
+            return AVERROR(EINVAL);
+        }
+        s->plane_count = plane_count;
+        s->buf_start[i] = av_malloc_array(s->plane_count, sizeof(void *));
+        if (!s->buf_start[i]) {
+            av_log(ctx, AV_LOG_ERROR, "Cannot allocate buffer pointers\n");
             return AVERROR(ENOMEM);
         }
-        s->buf_start[i] = v4l2_mmap(NULL, buf.length,
-                               PROT_READ | PROT_WRITE, MAP_SHARED,
-                               s->fd, buf.m.offset);
+        s->buf_len[i] = av_malloc_array(s->plane_count, sizeof(unsigned int*));
+        if (!s->buf_len[i]) {
+            av_log(ctx, AV_LOG_ERROR, "Cannot allocate buffer sizes\n");
+            av_freep(&s->buf_start);
+            return AVERROR(ENOMEM);
+        }
+        for (int iplane = 0; iplane < s->plane_count; iplane++) {
+            s->buf_len[i][iplane] = (s->multi_planer) ? buf.m.planes[iplane].length : buf.length;
+            total_frame_size += s->buf_len[i][iplane];
+            s->buf_start[i][iplane] = v4l2_mmap(NULL, s->buf_len[i][iplane],
+                                PROT_READ | PROT_WRITE, MAP_SHARED,
+                                s->fd, (s->multi_planer) ? buf.m.planes[iplane].m.mem_offset : buf.m.offset);
 
-        if (s->buf_start[i] == MAP_FAILED) {
-            res = AVERROR(errno);
-            av_log(ctx, AV_LOG_ERROR, "mmap: %s\n", av_err2str(res));
-            return res;
+            if (s->buf_start[i] == MAP_FAILED) {
+                res = AVERROR(errno);
+                av_log(ctx, AV_LOG_ERROR, "mmap: %s\n", av_err2str(res));
+                return res;
+            }
+        }
+
+        if (s->frame_size > 0 && total_frame_size < s->frame_size) {
+            av_log(ctx, AV_LOG_ERROR,
+                "buf_len[%d] = %d < expected frame size %d\n",
+                i, total_frame_size, s->frame_size);
+            return AVERROR(ENOMEM);
         }
     }
 
@@ -432,9 +463,9 @@ static void mmap_release_buffer(void *opaque, uint8_t *data)
     struct buff_data *buf_descriptor = opaque;
     struct video_data *s = buf_descriptor->s;
 
-    buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    buf.type   = (s->multi_planer) ? V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE : V4L2_BUF_TYPE_VIDEO_CAPTURE;
     buf.memory = V4L2_MEMORY_MMAP;
-    buf.index = buf_descriptor->index;
+    buf.index  = buf_descriptor->index;
     av_free(buf_descriptor);
 
     enqueue_buffer(s, &buf);
@@ -504,9 +535,12 @@ static int convert_timestamp(AVFormatContext *ctx, int64_t *ts)
 static int mmap_read_frame(AVFormatContext *ctx, AVPacket *pkt)
 {
     struct video_data *s = ctx->priv_data;
+    struct v4l2_plane planes[VIDEO_MAX_PLANES];
     struct v4l2_buffer buf = {
-        .type   = V4L2_BUF_TYPE_VIDEO_CAPTURE,
-        .memory = V4L2_MEMORY_MMAP
+        .type     = (s->multi_planer) ? V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE : V4L2_BUF_TYPE_VIDEO_CAPTURE,
+        .memory   = V4L2_MEMORY_MMAP,
+        .m.planes = (s->multi_planer) ? planes : 0,
+        .length   = (s->multi_planer) ? VIDEO_MAX_PLANES : 0
     };
     struct timeval buf_ts;
     int res;
@@ -544,29 +578,63 @@ static int mmap_read_frame(AVFormatContext *ctx, AVPacket *pkt)
     } else
 #endif
     {
+        int total_frame_size = 0;
+
         /* CPIA is a compressed format and we don't know the exact number of bytes
          * used by a frame, so set it here as the driver announces it. */
         if (ctx->video_codec_id == AV_CODEC_ID_CPIA)
             s->frame_size = buf.bytesused;
 
-        if (s->frame_size > 0 && buf.bytesused != s->frame_size) {
+        if (V4L2_TYPE_IS_MULTIPLANAR(buf.type)) {
+            for (int iplane = 0; iplane < buf.length; iplane++) {
+                total_frame_size += buf.m.planes[iplane].bytesused;
+            }
+        } else {
+            total_frame_size = buf.bytesused;
+        }
+        if (s->frame_size > 0 && total_frame_size != s->frame_size) {
             av_log(ctx, AV_LOG_WARNING,
                    "Dequeued v4l2 buffer contains %d bytes, but %d were expected. Flags: 0x%08X.\n",
-                   buf.bytesused, s->frame_size, buf.flags);
-            buf.bytesused = 0;
+                   total_frame_size, s->frame_size, buf.flags);
+            if (V4L2_TYPE_IS_MULTIPLANAR(buf.type)) {
+                for (int iplane = 0; iplane < buf.length; iplane++) {
+                    buf.m.planes[iplane].bytesused = 0;
+                }
+            } else {
+                buf.bytesused = 0;
+            }
         }
     }
 
-    /* Image is at s->buff_start[buf.index] */
-    if (atomic_load(&s->buffers_queued) == FFMAX(s->buffers / 8, 1)) {
-        /* when we start getting low on queued buffers, fall back on copying data */
-        res = av_new_packet(pkt, buf.bytesused);
-        if (res < 0) {
-            av_log(ctx, AV_LOG_ERROR, "Error allocating a packet.\n");
-            enqueue_buffer(s, &buf);
-            return res;
+    if (atomic_load(&s->buffers_queued) == FFMAX(s->buffers / 8, 1) || V4L2_TYPE_IS_MULTIPLANAR(buf.type)) {
+        if (V4L2_TYPE_IS_MULTIPLANAR(buf.type)) {
+            int totalbytes = 0;
+            for (int iplane = 0; iplane < buf.length; iplane++) {
+                totalbytes += buf.m.planes[iplane].bytesused;
+            }
+            res = av_new_packet(pkt, totalbytes);
+            if (res < 0) {
+                av_log(ctx, AV_LOG_ERROR, "Error allocating a packet.\n");
+                enqueue_buffer(s, &buf);
+                return res;
+            }
+            totalbytes = 0;
+            for (int iplane = 0; iplane < buf.length; iplane++) {
+                struct v4l2_plane *plane = &buf.m.planes[iplane];
+                memcpy(pkt->data + totalbytes, s->buf_start[buf.index][plane->data_offset], plane->bytesused);
+                totalbytes += plane->bytesused;
+            }
+        } else {
+            /* Image is at s->buff_start[buf.index] */
+            /* when we start getting low on queued buffers, fall back on copying data */
+            res = av_new_packet(pkt, buf.bytesused);
+            if (res < 0) {
+                av_log(ctx, AV_LOG_ERROR, "Error allocating a packet.\n");
+                enqueue_buffer(s, &buf);
+                return res;
+            }
+            memcpy(pkt->data, s->buf_start[buf.index][0], buf.bytesused);
         }
-        memcpy(pkt->data, s->buf_start[buf.index], buf.bytesused);
 
         res = enqueue_buffer(s, &buf);
         if (res) {
@@ -576,7 +644,7 @@ static int mmap_read_frame(AVFormatContext *ctx, AVPacket *pkt)
     } else {
         struct buff_data *buf_descriptor;
 
-        pkt->data     = s->buf_start[buf.index];
+        pkt->data     = s->buf_start[buf.index][0];
         pkt->size     = buf.bytesused;
 
         buf_descriptor = av_malloc(sizeof(struct buff_data));
@@ -614,10 +682,13 @@ static int mmap_start(AVFormatContext *ctx)
     int i, res;
 
     for (i = 0; i < s->buffers; i++) {
+        struct v4l2_plane planes[VIDEO_MAX_PLANES];
         struct v4l2_buffer buf = {
-            .type   = V4L2_BUF_TYPE_VIDEO_CAPTURE,
-            .index  = i,
-            .memory = V4L2_MEMORY_MMAP
+            .type     = (s->multi_planer) ? V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE : V4L2_BUF_TYPE_VIDEO_CAPTURE,
+            .index    = i,
+            .memory   = V4L2_MEMORY_MMAP,
+            .m.planes = (s->multi_planer) ? planes : 0,
+            .length   = (s->multi_planer) ? VIDEO_MAX_PLANES : 0
         };
 
         if (v4l2_ioctl(s->fd, VIDIOC_QBUF, &buf) < 0) {
@@ -629,7 +700,7 @@ static int mmap_start(AVFormatContext *ctx)
     }
     atomic_store(&s->buffers_queued, s->buffers);
 
-    type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    type = (s->multi_planer) ? V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE : V4L2_BUF_TYPE_VIDEO_CAPTURE;
     if (v4l2_ioctl(s->fd, VIDIOC_STREAMON, &type) < 0) {
         res = AVERROR(errno);
         av_log(ctx, AV_LOG_ERROR, "ioctl(VIDIOC_STREAMON): %s\n",
@@ -645,13 +716,19 @@ static void mmap_close(struct video_data *s)
     enum v4l2_buf_type type;
     int i;
 
-    type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    type = (s->multi_planer) ? V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE : V4L2_BUF_TYPE_VIDEO_CAPTURE;
     /* We do not check for the result, because we could
      * not do anything about it anyway...
      */
     v4l2_ioctl(s->fd, VIDIOC_STREAMOFF, &type);
     for (i = 0; i < s->buffers; i++) {
-        v4l2_munmap(s->buf_start[i], s->buf_len[i]);
+        for (int iplane = 0; iplane < s->plane_count; iplane++) {
+            v4l2_munmap(s->buf_start[i][iplane], s->buf_len[i][iplane]);
+        }
+    }
+    for (int iplane = 0; iplane < s->plane_count; iplane++) {
+        av_freep(&s->buf_start[iplane]);
+        av_freep(&s->buf_len[iplane]);
     }
     av_freep(&s->buf_start);
     av_freep(&s->buf_len);
@@ -732,10 +809,40 @@ static int v4l2_set_parameters(AVFormatContext *ctx)
         tpf = &streamparm.parm.capture.timeperframe;
     }
 
-    streamparm.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    streamparm.type = (s->multi_planer) ? V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE : V4L2_BUF_TYPE_VIDEO_CAPTURE;
     if (v4l2_ioctl(s->fd, VIDIOC_G_PARM, &streamparm) < 0) {
+        // for error cases, try to get frame rate from VIDIOC_G_DV_TIMINGS
+        struct v4l2_dv_timings timings;
         ret = AVERROR(errno);
-        av_log(ctx, AV_LOG_WARNING, "ioctl(VIDIOC_G_PARM): %s\n", av_err2str(ret));
+        if (v4l2_ioctl(s->fd, VIDIOC_G_DV_TIMINGS, &timings) == 0) {
+            const int total_width  = timings.bt.width  + timings.bt.hfrontporch + timings.bt.hsync + timings.bt.hbackporch;
+            const int total_height = timings.bt.height + timings.bt.vfrontporch + timings.bt.vsync + timings.bt.vbackporch;
+            int64_t framerate_den = 1001;
+            int64_t framerate_num = av_rescale(timings.bt.pixelclock, framerate_den, (int64_t)total_width * total_height);
+            framerate_num = ((framerate_num + 5) / 10) * 10; // round by 10
+            if (framerate_num % 1000 == 0) {
+                tpf->numerator   = framerate_den;
+                tpf->denominator = framerate_num;
+            } else {
+                int framerate_num_dst = 0, framerate_den_dst = 0;
+                framerate_den = 1000;
+                framerate_num = av_rescale(timings.bt.pixelclock, framerate_den, (int64_t)total_width * total_height);
+                framerate_num = ((framerate_num + 5) / 10) * 10; // round by 10
+                av_reduce(&framerate_num_dst, &framerate_den_dst, framerate_num, framerate_den, INT_MAX);
+                tpf->numerator   = framerate_den_dst;
+                tpf->denominator = framerate_num_dst;
+            }
+            av_log(ctx, AV_LOG_WARNING, "ioctl(VIDIOC_G_PARM): %s, estimated framerate %d/%d from dv timings.\n",
+                   av_err2str(ret), tpf->denominator, tpf->numerator);
+        } else if (framerate_q.num && framerate_q.den) {
+            // use user defined framerate for further error cases.
+            tpf->numerator   = framerate_q.num;
+            tpf->denominator = framerate_q.den;
+            av_log(ctx, AV_LOG_WARNING, "ioctl(VIDIOC_G_PARM): %s, using framerate %d/%d\n",
+                   av_err2str(ret), framerate_q.num, framerate_q.den);
+        } else {
+            av_log(ctx, AV_LOG_WARNING, "ioctl(VIDIOC_G_PARM): %s\n", av_err2str(ret));
+        }
     } else if (framerate_q.num && framerate_q.den) {
         if (streamparm.parm.capture.capability & V4L2_CAP_TIMEPERFRAME) {
             tpf = &streamparm.parm.capture.timeperframe;
@@ -865,15 +972,20 @@ static int v4l2_read_header(AVFormatContext *ctx)
         av_log(ctx, AV_LOG_DEBUG, "Selecting input_channel: %d\n", s->channel);
         if (v4l2_ioctl(s->fd, VIDIOC_S_INPUT, &s->channel) < 0) {
             res = AVERROR(errno);
-            av_log(ctx, AV_LOG_ERROR, "ioctl(VIDIOC_S_INPUT): %s\n", av_err2str(res));
-            goto fail;
+            av_log(ctx, (s->ignore_input_error) ? AV_LOG_WARNING : AV_LOG_ERROR, "ioctl(VIDIOC_S_INPUT): %s\n", av_err2str(res));
+            if (!s->ignore_input_error) {
+                goto fail;
+            }
         }
     } else {
         /* get current video input */
         if (v4l2_ioctl(s->fd, VIDIOC_G_INPUT, &s->channel) < 0) {
             res = AVERROR(errno);
-            av_log(ctx, AV_LOG_ERROR, "ioctl(VIDIOC_G_INPUT): %s\n", av_err2str(res));
-            goto fail;
+            av_log(ctx, (s->ignore_input_error) ? AV_LOG_WARNING : AV_LOG_ERROR, "ioctl(VIDIOC_G_INPUT): %s\n", av_err2str(res));
+            if (!s->ignore_input_error)
+                goto fail;
+            else
+                s->channel = 0;
         }
     }
 
@@ -920,7 +1032,7 @@ static int v4l2_read_header(AVFormatContext *ctx)
     }
 
     if (!s->width && !s->height) {
-        struct v4l2_format fmt = { .type = V4L2_BUF_TYPE_VIDEO_CAPTURE };
+        struct v4l2_format fmt = { .type = (s->multi_planer) ? V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE : V4L2_BUF_TYPE_VIDEO_CAPTURE };
 
         av_log(ctx, AV_LOG_VERBOSE,
                "Querying the device for the current frame size\n");
@@ -1108,6 +1220,7 @@ static const AVOption options[] = {
     { "pixel_format", "set preferred pixel format",                               OFFSET(pixel_format), AV_OPT_TYPE_STRING, {.str = NULL},  0, 0,       DEC },
     { "input_format", "set preferred pixel format (for raw video) or codec name", OFFSET(pixel_format), AV_OPT_TYPE_STRING, {.str = NULL},  0, 0,       DEC },
     { "framerate",    "set frame rate",                                           OFFSET(framerate),    AV_OPT_TYPE_STRING, {.str = NULL},  0, 0,       DEC },
+    { "ignore_input_error", "ignore input error",                                 OFFSET(ignore_input_error), AV_OPT_TYPE_BOOL, {.i64 = 1 }, 0, 1,      DEC },
 
     { "list_formats", "list available formats and exit",                          OFFSET(list_format),  AV_OPT_TYPE_INT,    {.i64 = 0 },  0, INT_MAX, DEC, .unit = "list_formats" },
     { "all",          "show all available formats",                               OFFSET(list_format),  AV_OPT_TYPE_CONST,  {.i64 = V4L_ALLFORMATS  },    0, INT_MAX, DEC, .unit = "list_formats" },

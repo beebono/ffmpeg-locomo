@@ -18,6 +18,7 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
+#include "libavutil/mem.h"
 #include "swscale_internal.h"
 
 typedef struct GammaContext
@@ -69,4 +70,3 @@ int ff_init_gamma_convert(SwsFilterDescriptor *desc, SwsSlice * src, uint16_t *t
 
     return 0;
 }
-

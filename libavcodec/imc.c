@@ -38,6 +38,7 @@
 #include "libavutil/ffmath.h"
 #include "libavutil/float_dsp.h"
 #include "libavutil/internal.h"
+#include "libavutil/mem.h"
 #include "libavutil/mem_internal.h"
 #include "libavutil/thread.h"
 #include "libavutil/tx.h"
@@ -964,6 +965,8 @@ static int imc_decode_frame(AVCodecContext *avctx, AVFrame *frame,
     IMCContext *q = avctx->priv_data;
 
     LOCAL_ALIGNED_16(uint16_t, buf16, [(IMC_BLOCK_SIZE + AV_INPUT_BUFFER_PADDING_SIZE) / 2]);
+
+    memset(buf16 + IMC_BLOCK_SIZE/2, 0, AV_INPUT_BUFFER_PADDING_SIZE);
 
     q->avctx = avctx;
 
