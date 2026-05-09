@@ -189,8 +189,6 @@ typedef struct HEVCVPS {
     int vps_num_ticks_poc_diff_one; ///< vps_num_ticks_poc_diff_one_minus1 + 1
     int vps_num_hrd_parameters;
 
-    HEVCHdrParams *hdr;
-
     /* VPS extension */
 
     /* Number of layers this VPS was parsed for, between 1 and

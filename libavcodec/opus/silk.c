@@ -27,7 +27,7 @@
 #include <stdint.h>
 
 #include "libavutil/mem.h"
-#include "mathops.h"
+#include "libavcodec/mathops.h"
 #include "opus.h"
 #include "rc.h"
 #include "silk.h"

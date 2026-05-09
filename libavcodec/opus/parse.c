@@ -31,12 +31,12 @@
 #include "libavutil/log.h"
 #include "libavutil/mem.h"
 
-#include "avcodec.h"
-#include "internal.h"
-#include "mathops.h"
+#include "libavcodec/avcodec.h"
+#include "libavcodec/codec_internal.h"
+#include "libavcodec/mathops.h"
 #include "opus.h"
 #include "parse.h"
-#include "vorbis_data.h"
+#include "libavcodec/vorbis_data.h"
 
 static const uint16_t opus_frame_duration[32] = {
     480, 960, 1920, 2880,

@@ -24,7 +24,7 @@
 #include <unistd.h>
 
 #include <drm_fourcc.h>
-#include <libudev.h>
+#include <udev.h>
 
 #include "libavutil/hwcontext_v4l2request.h"
 #include "libavutil/mem.h"

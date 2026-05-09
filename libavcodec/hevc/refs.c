@@ -24,12 +24,12 @@
 #include "libavutil/mem.h"
 #include "libavutil/stereo3d.h"
 
-#include "container_fifo.h"
-#include "decode.h"
+#include "libavcodec/container_fifo.h"
+#include "libavcodec/decode.h"
 #include "hevc.h"
 #include "hevcdec.h"
-#include "progressframe.h"
-#include "refstruct.h"
+#include "libavcodec/progressframe.h"
+#include "libavcodec/refstruct.h"
 
 void ff_hevc_unref_frame(HEVCFrame *frame, int flags)
 {

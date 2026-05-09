@@ -20,13 +20,13 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
-#include "get_bits.h"
+#include "libavcodec/get_bits.h"
 #include "hevcdec.h"
 
-#include "bit_depth_template.c"
+#include "libavcodec/bit_depth_template.c"
 #include "dsp.h"
-#include "h26x/h2656_sao_template.c"
-#include "h26x/h2656_inter_template.c"
+#include "libavcodec/h26x/h2656_sao_template.c"
+#include "libavcodec/h26x/h2656_inter_template.c"
 
 static void FUNC(put_pcm)(uint8_t *_dst, ptrdiff_t stride, int width, int height,
                           GetBitContext *gb, int pcm_bit_depth)
