@@ -32,7 +32,7 @@
 #include "libavutil/mem.h"
 
 #include "libavcodec/avcodec.h"
-#include "libavcodec/codec_internal.h"
+#include "libavcodec/internal.h"
 #include "libavcodec/mathops.h"
 #include "opus.h"
 #include "parse.h"

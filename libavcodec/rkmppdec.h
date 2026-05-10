@@ -28,7 +28,7 @@
 #ifndef AVCODEC_RKMPPDEC_H
 #define AVCODEC_RKMPPDEC_H
 
-#include <rockchip/rk_mpi.h>
+#include <rk_mpi.h>
 
 #include "codec_internal.h"
 #include "decode.h"

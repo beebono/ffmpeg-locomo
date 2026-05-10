@@ -1,7 +1,6 @@
 static const FFBitStreamFilter * const bitstream_filters[] = {
     &ff_aac_adtstoasc_bsf,
     &ff_dump_extradata_bsf,
-    &ff_extract_extradata_bsf,
     &ff_filter_units_bsf,
     &ff_h264_metadata_bsf,
     &ff_h264_mp4toannexb_bsf,

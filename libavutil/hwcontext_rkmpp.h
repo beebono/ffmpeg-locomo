@@ -22,7 +22,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <drm_fourcc.h>
-#include <rockchip/rk_mpi.h>
+#include <rk_mpi.h>
 
 #include "hwcontext_drm.h"
 
