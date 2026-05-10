@@ -307,7 +307,6 @@ pub fn build(b: *std.Build) void {
     });
     b.installArtifact(rkmpp);
     mod.addIncludePath(mpp_upstream.path("inc"));
-    mod.linkLibrary(rkmpp);
 
     const avconfig_h = b.addConfigHeader(.{
         .style = .blank,
